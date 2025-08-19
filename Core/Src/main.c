@@ -1,4 +1,4 @@
- /* USER CODE BEGIN Header */
+/* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file           : main.c
@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "stm32f1xx_hal.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,7 +33,17 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+// AHT10 I2C Address
+#define AHT10_ADDRESS       0x38 << 1  // 7-bit address shifted for HAL
 
+// AHT10 Commands
+#define AHT10_INIT_CMD      0xE1
+#define AHT10_MEASURE_CMD   0xAC
+#define AHT10_RESET_CMD     0xBA
+
+// AHT10 Status bits
+#define AHT10_STATUS_BUSY   0x80
+#define AHT10_STATUS_CAL    0x08
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -54,7 +66,11 @@ static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+uint8_t AHT10_Init(void);
+uint8_t AHT10_Read_Status(void);
+uint8_t AHT10_Trigger_Measurement(void);
+uint8_t AHT10_Read_Data(float *temperature, float *humidity);
+void AHT10_Reset(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -94,14 +110,44 @@ int main(void)
   MX_I2C1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
+  char msg[100];
+  float temperature, humidity;
 
+  sprintf(msg, "AHT10 Sensor Test Starting...\r\n");
+  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+  // Initialize AHT10
+  if (AHT10_Init() != HAL_OK) {
+	  sprintf(msg, "AHT10 Initialization Failed!\r\n");
+	  HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  cppmain();
+	  // Trigger measurement
+	      if (AHT10_Trigger_Measurement() == HAL_OK) {
+	          HAL_Delay(80); // Wait for measurement to complete
+
+	          // Read temperature and humidity
+	          if (AHT10_Read_Data(&temperature, &humidity) == HAL_OK) {
+	              // Convert float to integers for display (avoid float formatting)
+	              int temp_int = (int)temperature;
+	              int temp_dec = (int)((temperature - temp_int) * 100);
+	              int hum_int = (int)humidity;
+	              int hum_dec = (int)((humidity - hum_int) * 100);
+
+	              sprintf(msg, "Temperature: %d.%02dC, Humidity: %d.%02d%%\r\n",
+	                     temp_int, temp_dec, hum_int, hum_dec);
+	              HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+	          } else {
+	              sprintf(msg, "Failed to read sensor data!\r\n");
+	              HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+	          }
+	      }
+	  HAL_Delay(2000); // Read every 2 seconds
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -121,10 +167,13 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL9;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -134,12 +183,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -219,14 +268,36 @@ static void MX_USART1_UART_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_15, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PC13 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_15;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -234,7 +305,82 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+// AHT10 Initialization
+uint8_t AHT10_Init(void)
+{
+    uint8_t init_cmd[3] = {AHT10_INIT_CMD, 0x08, 0x00};
 
+    // Wait after power-on
+    HAL_Delay(40);
+
+    // Send initialization command
+    if (HAL_I2C_Master_Transmit(&hi2c1, AHT10_ADDRESS, init_cmd, 3, 1000) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    HAL_Delay(10);
+
+    // Check if calibration bit is set
+    uint8_t status = AHT10_Read_Status();
+    if ((status & AHT10_STATUS_CAL) == 0) {
+        return HAL_ERROR; // Calibration failed
+    }
+
+    return HAL_OK;
+}
+
+// Read AHT10 status register
+uint8_t AHT10_Read_Status(void)
+{
+    uint8_t status = 0;
+    HAL_I2C_Master_Receive(&hi2c1, AHT10_ADDRESS, &status, 1, 1000);
+    return status;
+}
+
+// Trigger measurement
+uint8_t AHT10_Trigger_Measurement(void)
+{
+    uint8_t measure_cmd[3] = {AHT10_MEASURE_CMD, 0x33, 0x00};
+
+    return HAL_I2C_Master_Transmit(&hi2c1, AHT10_ADDRESS, measure_cmd, 3, 1000);
+}
+
+// Read temperature and humidity data
+uint8_t AHT10_Read_Data(float *temperature, float *humidity)
+{
+    uint8_t data[6];
+    uint32_t raw_humidity, raw_temperature;
+
+    // Check if sensor is busy
+    if (AHT10_Read_Status() & AHT10_STATUS_BUSY) {
+        return HAL_ERROR; // Sensor still measuring
+    }
+
+    // Read 6 bytes of data
+    if (HAL_I2C_Master_Receive(&hi2c1, AHT10_ADDRESS, data, 6, 1000) != HAL_OK) {
+        return HAL_ERROR;
+    }
+
+    // Extract raw humidity (20 bits)
+    raw_humidity = ((uint32_t)data[1] << 12) | ((uint32_t)data[2] << 4) | (data[3] >> 4);
+
+    // Extract raw temperature (20 bits)
+    raw_temperature = (((uint32_t)data[3] & 0x0F) << 16) | ((uint32_t)data[4] << 8) | data[5];
+
+    // Convert to actual values
+    *humidity = (float)raw_humidity * 100.0f / 1048576.0f; // 2^20 = 1048576
+    *temperature = (float)raw_temperature * 200.0f / 1048576.0f - 50.0f;
+
+    return HAL_OK;
+}
+
+// Reset AHT10
+void AHT10_Reset(void)
+{
+    uint8_t reset_cmd = AHT10_RESET_CMD;
+    HAL_I2C_Master_Transmit(&hi2c1, AHT10_ADDRESS, &reset_cmd, 1, 1000);
+    HAL_Delay(20);
+}
 /* USER CODE END 4 */
 
 /**
@@ -251,8 +397,7 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-
-#ifdef  USE_FULL_ASSERT
+#ifdef USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
